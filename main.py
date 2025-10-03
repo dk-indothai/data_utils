@@ -1,11 +1,108 @@
 #!/usr/bin/env python3
 import argparse
+from typing import List
+from typing_extensions import Dict
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
 import time
 import os
 import sys
+
+DATE_FORMAT = "%d-%b-%y"
+
+def append_to_csv_from_list(data_list: List[Dict[str, str]], output_file: Path):
+    """
+    Converts a list of dictionaries into a Pandas DataFrame and appends it
+    to a specified CSV file, handling the header automatically.
+
+    Args:
+        data_list: The list of dictionaries (rows) to be appended.
+        output_file: The path to the target CSV file.
+    """
+    if not data_list:
+        print("Warning: Attempted to append an empty list of data. No action taken.")
+        return
+
+    # Convert the list of dicts to a DataFrame
+    df_to_append = pd.DataFrame(data_list)
+
+    # Check if file exists to decide on writing the header
+    include_header = not os.path.exists(output_file)
+
+    try:
+        # Use 'a' for append mode
+        df_to_append.to_csv(
+            output_file,
+            mode='a',
+            index=False,
+            header=include_header
+        )
+    except Exception as e:
+        print(f"\nError saving data to CSV: {e}")
+
+def extract_path_components(path_str: str) -> Dict[str, str]:
+    """
+    Parses a specific file path structure to extract trading option metadata.
+
+    Args:
+        path_str: The full path string.
+
+    Returns:
+        A dictionary containing the extracted components.
+    """
+    # Use Path to easily handle path parts regardless of OS
+    p = Path(path_str)
+
+    # 1. File Name (the last component)
+    file_name = p.name
+
+    # 2. Extract parts from the path hierarchy
+    # Date: Assumed to be two levels up from the file (e.g., '2025-01-03')
+    try:
+        date = p.parent.parent.name
+    except IndexError:
+        print(f"Error: Path structure for {path_str} is too short. Cannot reliably extract Date from folders.")
+        date = "N/A"
+
+    # 3. Extract parts from the filename (e.g., NIFTY_22900_CE_09_JAN_25.csv)
+    # The stem is the filename without the extension
+    filename_parts = p.stem.split('_')
+
+    # Initialize defaults
+    symbol, strike, optiontype, expiry_str = "N/A", "N/A", "N/A", "N/A"
+
+    if len(filename_parts) >= 6:
+        symbol = filename_parts[0]  # e.g., NIFTY
+        strike = filename_parts[1]     # e.g., 22900
+        optiontype = filename_parts[2] # e.g., CE
+
+        # Expiry: Reconstruct the DD_MON_YY part into a readable date string
+        day, month, year = filename_parts[3], filename_parts[4], filename_parts[5]
+        expiry_str = f"{day}-{month}-{year}"
+
+        # Optional: verify date format
+        try:
+            datetime.strptime(expiry_str, DATE_FORMAT)
+        except ValueError:
+            print(f"Warning: Could not parse expiry date part: {expiry_str} for file {file_name}")
+
+    else:
+        print(f"Error: Filename '{file_name}' does not contain expected 6 parts.")
+
+
+    # Create the result dictionary
+    result = {
+        "date": date,
+        "file_name": file_name,
+        "symbol": symbol, # Renamed from 'underline'
+        "strike": strike,
+        "optiontype": optiontype,
+        "expire": expiry_str
+    }
+
+    return result
+
 
 def build_filename_series(df: pd.DataFrame) -> pd.Series:
     """
@@ -66,7 +163,7 @@ def parse_filename_components_from_input_path(input_file: Path) -> dict or None:
     # If parsing fails or parts are missing
     return None
 
-def process_csv(input_file: Path, output_dir: Path):
+def process_csv(input_file: Path, output_dir: Path, universe_csv_file_path: Path):
     start_file = time.perf_counter()
     try:
         # Load the CSV. Using 'dtype=str' ensures all fields are treated consistently.
@@ -145,6 +242,8 @@ def process_csv(input_file: Path, output_dir: Path):
     written_rows_count = 0
     unique_files_count = 0
 
+    universe_data: List[Dict[str, str]] = []
+
     for out_path_str, group_df in df.groupby("out_path_str"):
         out_path = Path(out_path_str)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -153,7 +252,6 @@ def process_csv(input_file: Path, output_dir: Path):
         is_append = out_path.exists()
         mode = "a" if is_append else "w"
         header = not is_append
-
         # Write the entire group in a single operation
         group_df.to_csv(
             out_path,
@@ -165,6 +263,11 @@ def process_csv(input_file: Path, output_dir: Path):
         written_rows_count += len(group_df)
         unique_files_count += 1
 
+        data = extract_path_components(out_path.as_uri())
+        universe_data.append(data)
+
+    append_to_csv_from_list(universe_data, universe_csv_file_path)
+
     end_file = time.perf_counter()
     duration = end_file - start_file
     print(
@@ -174,7 +277,7 @@ def process_csv(input_file: Path, output_dir: Path):
     )
     return written_rows_count, unique_files_count
 
-def process_folder(input_dir: Path, output_dir: Path):
+def process_folder(input_dir: Path, output_dir: Path, universe_csv_file_path: Path):
     """Iterates through all CSV files recursively and processes them with a progress bar."""
     start_processing = time.perf_counter()
 
@@ -193,7 +296,7 @@ def process_folder(input_dir: Path, output_dir: Path):
 
         # Process the file
         try:
-            result = process_csv(csv_file, output_dir)
+            result = process_csv(csv_file, output_dir, universe_csv_file_path)
             if result is not None:
                 rows_written, files_generated = result
                 total_rows_written += rows_written
@@ -214,6 +317,37 @@ def process_folder(input_dir: Path, output_dir: Path):
     print(f"Total Time Taken: {duration / 60:,} minutes")
     print("=======================================================")
 
+def sort_universe_file(universe_file: Path):
+    """
+    Sorts a universe file by the 'date' column using a Pandas DataFrame.
+
+    Args:
+        universe_file: The Path object pointing to the CSV file to be sorted.
+    """
+    print("\n=======================================================")
+    print(f"Sorting universe file {universe_file.name} by 'date'...")
+
+    try:
+        # 1. Read the file into a DataFrame
+        # We read the 'date' column as a string to ensure consistent sorting,
+        # since it's already in the 'YYYY-MM-DD' format which sorts correctly lexicographically.
+        df = pd.read_csv(universe_file)
+
+        # Ensure the 'date' column exists (it should, based on extract_path_components)
+        if "date" not in df.columns:
+            print(f"Error: 'date' column not found in {universe_file.name}. Skipping sort.")
+            return
+
+        # 2. Sort the DataFrame by the 'date' column (ascending by default)
+        df.sort_values(by="date", inplace=True)
+
+        # 3. Overwrite the original file with the sorted content
+        df.to_csv(universe_file, index=False, header=True)
+        print(f"Successfully sorted {len(df)} rows in {universe_file.name}.")
+        print("=======================================================")
+
+    except Exception as e:
+        print(f"Error during sorting of {universe_file.name}: {e}")
 
 def sort_output_files(output_dir: Path):
     """
@@ -258,7 +392,6 @@ def sort_output_files(output_dir: Path):
     print(f"Finished sorting. {sorted_count:,} files were successfully sorted in {duration / 60:.2f} minutes.")
     print("=======================================================")
 
-
 def main():
     parser = argparse.ArgumentParser(
         description="Optimized script to reorganize and split CSV data by grouping unique option parameters, with fallback support."
@@ -270,15 +403,18 @@ def main():
 
     # Use resolve() for clean, absolute paths
     input_dir = Path(args.input_dir).resolve()
-    output_dir = Path(args.output_dir).resolve()
+    output_dir = Path(args.output_dir, "data").resolve()
+    universe_csv_file_path = Path(args.output_dir, "universe.csv").resolve()
 
     if not input_dir.exists() or not input_dir.is_dir():
         print(f"Error: Input folder '{input_dir}' does not exist or is not a directory.")
         return
 
-    process_folder(input_dir, output_dir)
+    process_folder(input_dir, output_dir, universe_csv_file_path)
     # Sorting of each output file after all processing is complete
     sort_output_files(output_dir)
+    # Create universe file
+    sort_universe_file(universe_csv_file_path)
 
 
 if __name__ == "__main__":
