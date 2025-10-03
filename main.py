@@ -5,7 +5,7 @@ from pathlib import Path
 from datetime import datetime
 import time
 import os
-import sys
+import sys # <-- ADDED: Import sys for flushing output
 
 def build_filename_series(df: pd.DataFrame) -> pd.Series:
     """
@@ -49,19 +49,20 @@ def process_csv(input_file: Path, output_dir: Path):
         # Load the CSV. Using 'dtype=str' ensures all fields are treated consistently before processing.
         df = pd.read_csv(input_file, dtype=str)
     except Exception as e:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Skipping {input_file}, error reading: {e}")
+        # Print error on a new line so it doesn't mess up the progress bar
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Skipping {input_file}, error reading: {e}")
         return
 
     required_cols = {"DateTime", "Symbol", "Strike", "OptionType", "Expiry"}
     if not required_cols.issubset(df.columns):
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Skipping {input_file}, missing required columns.")
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Skipping {input_file}, missing required columns.")
         return
 
     # Drop invalid rows based on required columns
     initial_rows = len(df)
     df = df.dropna(subset=list(required_cols))
     if len(df) == 0:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Skipping {input_file}, no valid rows after cleanup.")
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Skipping {input_file}, no valid rows after cleanup.")
         return
 
     # 1. Vectorized calculation of filename
@@ -108,28 +109,54 @@ def process_csv(input_file: Path, output_dir: Path):
         )
         written_rows_count += len(group_df)
         unique_files_count += 1
-        # Logging now reports batch write
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Written {len(group_df):,} rows to -> {out_path}")
+        # Removed verbose intermediate logging here to preserve the progress bar in process_folder.
+        # print(f"[{datetime.now().strftime('%H:%M:%S')}] Written {len(group_df):,} rows to -> {out_path}")
 
     end_file = time.perf_counter()
     duration = end_file - start_file
+    # REMOVED the leading \n here to ensure the summary overwrites the progress bar line.
     print(
-        f"\n{input_file.name}: Processed {initial_rows:,} rows (Kept: {written_rows_count:,}). "
+        f"{input_file.name}: Processed {initial_rows:,} rows (Kept: {written_rows_count:,}). "
         f"Generated {unique_files_count:,} new file(s). "
-        f"⏱️ Time for file: {duration:.2f} seconds\n"
+        f"⏱️ Time for file: {duration:.2f} seconds"
+        # The default end='\n' in the print function will move the cursor to a fresh line.
     )
+    return written_rows_count, unique_files_count
 
 def process_folder(input_dir: Path, output_dir: Path):
-    """Iterates through all CSV files recursively and processes them."""
+    """Iterates through all CSV files recursively and processes them with a progress bar."""
     csv_files = list(input_dir.rglob("*.csv"))
     total_files = len(csv_files)
+
+    total_rows_written = 0
+    total_files_generated = 0
+
     print(f"Found {total_files} CSV files to process.\n")
 
     for i, csv_file in enumerate(csv_files, 1):
-        print(f"Processing file {i}/{total_files}: {csv_file}")
-        process_csv(csv_file, output_dir)
+        # Progress bar update before processing the file
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Processing file {i:,}/{total_files:,}: {csv_file.name}...\r", end="")
+        sys.stdout.flush()
+
+        # Process the file
+        try:
+            rows_written, files_generated = process_csv(csv_file, output_dir)
+            total_rows_written += rows_written
+            total_files_generated += files_generated
+        except TypeError:
+            # Handle cases where process_csv returns None if an error occurs
+            pass
+
+    # Clear the progress line after completion and print summary
+    print(" " * 100 + "\r", end="")
+    print("=======================================================")
+    print(f"Input Processing Complete: {total_files} files processed.")
+    print(f"Total Rows Written: {total_rows_written:,}")
+    print(f"Total Output Files Created/Appended: {total_files_generated:,}")
+    print("=======================================================")
 
 
+# NEW FUNCTION: Sorts contents of all output files with a progress indicator
 def sort_output_files(output_dir: Path):
     """
     Iterates through all generated CSV files and sorts their contents by DateTime.
@@ -172,6 +199,7 @@ def sort_output_files(output_dir: Path):
     print(f"Finished sorting. {sorted_count:,} files were successfully sorted in {duration:.2f} seconds.")
     print("=======================================================")
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="Optimized script to reorganize and split CSV data by grouping unique option parameters."
@@ -189,7 +217,7 @@ def main():
         print(f"Error: Input folder '{input_dir}' does not exist or is not a directory.")
         return
 
-    # process_folder(input_dir, output_dir)
+    process_folder(input_dir, output_dir)
     # ADDED: Sorting of each output file after all processing is complete
     sort_output_files(output_dir)
 
@@ -201,5 +229,5 @@ if __name__ == "__main__":
 
     elapsed = end - start
     print(f"\n=======================================================")
-    print(f"🏁 All files processed! ⏱️ Total execution time: {elapsed:.2f} seconds")
+    print(f"🏁 Total execution time: {elapsed:.2f} seconds")
     print(f"=======================================================")
