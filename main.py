@@ -314,7 +314,7 @@ def process_folder(input_dir: Path, output_dir: Path, universe_csv_file_path: Pa
     print(f"Input Processing Complete: {total_files} files processed.")
     print(f"Total Rows Written: {total_rows_written:,}")
     print(f"Total Output Files Created/Appended: {total_files_generated:,}")
-    print(f"Total Time Taken: {duration / 60:,} minutes")
+    print(f"Total Time Taken: {duration / 60:.2f} minutes")
     print("=======================================================")
 
 def sort_universe_file(universe_file: Path):
@@ -424,5 +424,5 @@ if __name__ == "__main__":
 
     elapsed = end - start
     print(f"\n=======================================================")
-    print(f"🏁 Total execution time: {elapsed:.2f} seconds")
+    print(f"🏁 Total execution time: {elapsed / 60:.2f} minutes")
     print(f"=======================================================")
